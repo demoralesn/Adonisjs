@@ -1,0 +1,106 @@
+# Docker
+# Build a Docker image
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger: none
+
+resources:
+  - repo: self
+
+# Se definen variables, importante considerar las variables de entorno, ya que para los test unitarios se necesitaran
+variables:
+  tag: '$(Build.BuildId)'
+  versionAPP: none # Esta variable se utilizara para rescatar la versión desde el package.json
+  VARIABLE_EJEMPLO: ejemplo
+stages:
+  - stage: Build
+    displayName: Build image
+    jobs:
+      - job: Build
+        displayName: Build
+        pool:
+          #name: SAG
+          vmImage: ubuntu-latest
+        steps:
+          - task: CmdLine@2
+            displayName: 'Limpieza de NPM'
+            inputs:
+              script: npm cache clean --force
+            # Se copia el package.json a la carpeta de artifact para extraer la versión en etapas posteriores
+            # Con esto se genera la autenticación al repo privado de Azure Devops en el archivo .npmrc
+          - task: npmAuthenticate@0
+            displayName: 'Autenticacion NPM privado'
+            inputs:
+              workingFile: '.npmrc'
+            # Se instalan dependencias del proyecto
+          - task: Npm@1
+            displayName: 'Instalar dependencias'
+            inputs:
+              command: 'install'
+              workingDir: '$(System.DefaultWorkingDirectory)'
+            # Se ejecutan los test unitarios
+          # - task: Npm@1
+          # displayName: 'Ejecutar pruebas'
+          # inputs:
+          # command: 'custom'
+          # workingDir: '$(System.DefaultWorkingDirectory)'
+          # customCommand: 'run test:ci'
+          # customRegistry: 'useFeed'
+          # customFeed: 'ef63d3aa-e246-4765-bb93-44cc968fdd41'
+          # # Se ejecuta el coverage
+          # - task: PublishTestResults@2
+          # displayName: Publicar Pruebas
+          # condition: succeededOrFailed()
+          # inputs:
+          # testResultsFormat: 'JUnit'
+          # testResultsFiles: '$(System.DefaultWorkingDirectory)/junit.xml'
+          # # Se publica el coverage
+          # - task: PublishCodeCoverageResults@1
+          # displayName: 'Publicar Cobertura'
+          # inputs:
+          # codeCoverageTool: 'Cobertura'
+          # summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage/cobertura-coverage.xml'
+          # # Se obtiene la versión desde el package.json y se setea en una variable
+          - task: CmdLine@2
+            displayName: 'Obtencion de version y seteo de variable'
+            inputs:
+              script: |
+                npmVersionString=$(node -p "require('./package.json').version")
+                echo $npmVersionString
+                echo "##vso[task.setvariable variable=versionAPP]$npmVersionString"
+            # Se copia el package.json a la carpeta de artifact para extraer la versión en etapas posteriores
+          - task: CopyFiles@1
+            displayName: 'Copiar package.json y deploy-openshift.yaml'
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)'
+              Contents: |
+                package.json
+                deploy-openshift.yaml
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+            # Se genera la imagen y se sube al repositorio de Azure
+          - task: Docker@2
+            displayName: Construir la imagen y subirla a Azure
+            inputs:
+              containerRegistry: 'ACRMICSRV'
+              repository: '$(Build.Repository.Name)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: '$(versionAPP)'
+            # Se actualiza el BuildName con la versión del package.json
+          - task: PowerShell@2
+            displayName: 'Actualización BuildName'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $BuildName = '$(Build.BuildNumber)'+'_v'+'$(versionAPP)'
+                Write-Host "##vso[build.updatebuildnumber]$BuildName"
+            # Se publica el artifact
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publicar Artifact'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'config'
+
+          - task: MicrosoftSecurityDevOps@1
+            inputs:
+              command: 'run'
